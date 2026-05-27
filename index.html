@@ -155,15 +155,15 @@
     </div>
     <div class="field">
       <label>Channel to join</label>
-      <select id="l-channel" style="appearance:none;-webkit-appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238b949e' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 10px center;padding-right:28px">
-        <option value="Dispatch">Dispatch</option>
-        <option value="CallOps">CallOps</option>
-        <option value="Command">Command</option>
-        <option value="Tactical">Tactical</option>
-        <option value="Admin">Admin</option>
-        <option value="__custom__">— Custom channel…</option>
-      </select>
+      <div style="position:relative">
+        <select id="l-channel" style="appearance:none;-webkit-appearance:none;background-image:url(&quot;data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238b949e' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E&quot;);background-repeat:no-repeat;background-position:right 10px center;padding-right:28px">
+          <option value="" disabled selected>— enter credentials to load —</option>
+          <option value="__custom__">— Custom channel…</option>
+        </select>
+        <div id="ch-spinner" style="display:none;position:absolute;right:28px;top:50%;transform:translateY(-50%);font-size:11px;color:var(--text3)">loading…</div>
+      </div>
       <input id="l-channel-custom" type="text" placeholder="Enter channel name" style="margin-top:6px;display:none">
+      <div id="ch-fetch-status" style="font-size:11px;color:var(--text3);margin-top:4px"></div>
     </div>
     <div id="login-error" style="color:var(--red);font-size:12px;margin-bottom:10px;display:none"></div>
     <button class="btn btn-primary btn-full" id="login-btn" onclick="doLogin()">Connect to Channel</button>
@@ -885,6 +885,143 @@ document.addEventListener('click', () => { if (audioCtx && audioCtx.state === 's
 // Init idle wave
 setTimeout(drawIdleWave, 100);
 
+// ══════════════════════════════════════════════════
+//  ZELLO REST API — fetch channel list
+// ══════════════════════════════════════════════════
+const API_BASE = `https://${NETWORK}.zellowork.com`;
+const API_KEY  = 'AFBLHA5MONROCZ1XE6NELTAP04B39NKL';
+
+async function md5(str) {
+  // Use SubtleCrypto to get MD5 — not natively available, so we use a pure-JS fallback
+  // Simple MD5 implementation (RFC 1321)
+  function safeAdd(x,y){let lsw=(x&0xffff)+(y&0xffff),msw=(x>>16)+(y>>16)+(lsw>>16);return(msw<<16)|(lsw&0xffff)}
+  function bitRotateLeft(num,cnt){return(num<<cnt)|(num>>>(32-cnt))}
+  function md5cmn(q,a,b,x,s,t){return safeAdd(bitRotateLeft(safeAdd(safeAdd(a,q),safeAdd(x,t)),s),b)}
+  function md5ff(a,b,c,d,x,s,t){return md5cmn((b&c)|((~b)&d),a,b,x,s,t)}
+  function md5gg(a,b,c,d,x,s,t){return md5cmn((b&d)|(c&(~d)),a,b,x,s,t)}
+  function md5hh(a,b,c,d,x,s,t){return md5cmn(b^c^d,a,b,x,s,t)}
+  function md5ii(a,b,c,d,x,s,t){return md5cmn(c^(b|(~d)),a,b,x,s,t)}
+  function calculateMD5(string){
+    let i,x=unescape(encodeURIComponent(string)),n=x.length,state=[1732584193,-271733879,-1732584194,271733878],m=[];
+    for(i=0;i<Math.ceil((n+8)/64)*64;i+=4)m[i>>2]=x.charCodeAt(i)+(x.charCodeAt(i+1)<<8)+(x.charCodeAt(i+2)<<16)+(x.charCodeAt(i+3)<<24);
+    m[n>>2]|=0x80<<((n%4)<<3);m[(Math.ceil((n+8)/64)*16-2)]=n*8;m[(Math.ceil((n+8)/64)*16-1)]=n/0x80000000;
+    for(i=0;i<m.length;i+=16){
+      let[a,b,c,d]=state;
+      a=md5ff(a,b,c,d,m[i],7,-680876936);d=md5ff(d,a,b,c,m[i+1],12,-389564586);c=md5ff(c,d,a,b,m[i+2],17,606105819);b=md5ff(b,c,d,a,m[i+3],22,-1044525330);
+      a=md5ff(a,b,c,d,m[i+4],7,-176418897);d=md5ff(d,a,b,c,m[i+5],12,1200080426);c=md5ff(c,d,a,b,m[i+6],17,-1473231341);b=md5ff(b,c,d,a,m[i+7],22,-45705983);
+      a=md5ff(a,b,c,d,m[i+8],7,1770035416);d=md5ff(d,a,b,c,m[i+9],12,-1958414417);c=md5ff(c,d,a,b,m[i+10],17,-42063);b=md5ff(b,c,d,a,m[i+11],22,-1990404162);
+      a=md5ff(a,b,c,d,m[i+12],7,1804603682);d=md5ff(d,a,b,c,m[i+13],12,-40341101);c=md5ff(c,d,a,b,m[i+14],17,-1502002290);b=md5ff(b,c,d,a,m[i+15],22,1236535329);
+      a=md5gg(a,b,c,d,m[i+1],5,-165796510);d=md5gg(d,a,b,c,m[i+6],9,-1069501632);c=md5gg(c,d,a,b,m[i+11],14,643717713);b=md5gg(b,c,d,a,m[i+0],20,-373897302);
+      a=md5gg(a,b,c,d,m[i+5],5,-701558691);d=md5gg(d,a,b,c,m[i+10],9,38016083);c=md5gg(c,d,a,b,m[i+15],14,-660478335);b=md5gg(b,c,d,a,m[i+4],20,-405537848);
+      a=md5gg(a,b,c,d,m[i+9],5,568446438);d=md5gg(d,a,b,c,m[i+14],9,-1019803690);c=md5gg(c,d,a,b,m[i+3],14,-187363961);b=md5gg(b,c,d,a,m[i+8],20,1163531501);
+      a=md5gg(a,b,c,d,m[i+13],5,-1444681467);d=md5gg(d,a,b,c,m[i+2],9,-51403784);c=md5gg(c,d,a,b,m[i+7],14,1735328473);b=md5gg(b,c,d,a,m[i+12],20,-1926607734);
+      a=md5hh(a,b,c,d,m[i+5],4,-378558);d=md5hh(d,a,b,c,m[i+8],11,-2022574463);c=md5hh(c,d,a,b,m[i+11],16,1839030562);b=md5hh(b,c,d,a,m[i+14],23,-35309556);
+      a=md5hh(a,b,c,d,m[i+1],4,-1530992060);d=md5hh(d,a,b,c,m[i+4],11,1272893353);c=md5hh(c,d,a,b,m[i+7],16,-155497632);b=md5hh(b,c,d,a,m[i+10],23,-1094730640);
+      a=md5hh(a,b,c,d,m[i+13],4,681279174);d=md5hh(d,a,b,c,m[i+0],11,-358537222);c=md5hh(c,d,a,b,m[i+3],16,-722521979);b=md5hh(b,c,d,a,m[i+6],23,76029189);
+      a=md5hh(a,b,c,d,m[i+9],4,-640364487);d=md5hh(d,a,b,c,m[i+12],11,-421815835);c=md5hh(c,d,a,b,m[i+15],16,530742520);b=md5hh(b,c,d,a,m[i+2],23,-995338651);
+      a=md5ii(a,b,c,d,m[i+0],6,-198630844);d=md5ii(d,a,b,c,m[i+7],10,1126891415);c=md5ii(c,d,a,b,m[i+14],15,-1416354905);b=md5ii(b,c,d,a,m[i+5],21,-57434055);
+      a=md5ii(a,b,c,d,m[i+12],6,1700485571);d=md5ii(d,a,b,c,m[i+3],10,-1894986606);c=md5ii(c,d,a,b,m[i+10],15,-1051523);b=md5ii(b,c,d,a,m[i+1],21,-2054922799);
+      a=md5ii(a,b,c,d,m[i+8],6,1873313359);d=md5ii(d,a,b,c,m[i+15],10,-30611744);c=md5ii(c,d,a,b,m[i+6],15,-1560198380);b=md5ii(b,c,d,a,m[i+13],21,1309151649);
+      a=md5ii(a,b,c,d,m[i+4],6,-145523070);d=md5ii(d,a,b,c,m[i+11],10,-1120210379);c=md5ii(c,d,a,b,m[i+2],15,718787259);b=md5ii(b,c,d,a,m[i+9],21,-343485551);
+      state=[safeAdd(a,state[0]),safeAdd(b,state[1]),safeAdd(c,state[2]),safeAdd(d,state[3])];
+    }
+    return state.map(n=>('00000000'+(n>>>0).toString(16)).slice(-8).match(/../g).map(h=>h[1]+h[0]).join('')).join('');
+  }
+  return calculateMD5(str);
+}
+
+let apiSid = null;
+
+async function fetchChannelsFromAPI(username, password) {
+  const status = document.getElementById('ch-fetch-status');
+  const spinner = document.getElementById('ch-spinner');
+  const sel = document.getElementById('l-channel');
+  spinner.style.display = 'block';
+  status.textContent = 'Fetching channels from network…';
+
+  try {
+    // Step 1: Get token
+    const tokenResp = await fetch(`${API_BASE}/api/user/gettoken`, {credentials:'omit'});
+    if (!tokenResp.ok) throw new Error(`gettoken HTTP ${tokenResp.status}`);
+    const tokenData = await tokenResp.json();
+    if (tokenData.code !== '200') throw new Error('gettoken: ' + tokenData.status);
+    const token = tokenData.token;
+    const sid = tokenData.sid;
+    dbg('API token OK, sid=' + sid);
+
+    // Step 2: Login — password = md5( md5(password) + token + apikey )
+    const passMd5 = await md5(password);
+    const authHash = await md5(passMd5 + token + API_KEY);
+    const loginResp = await fetch(`${API_BASE}/api/user/login?sid=${sid}`, {
+      method: 'POST',
+      credentials: 'omit',
+      headers: {'Content-Type':'application/x-www-form-urlencoded'},
+      body: `username=${encodeURIComponent(username)}&password=${encodeURIComponent(authHash)}`
+    });
+    if (!loginResp.ok) throw new Error(`login HTTP ${loginResp.status}`);
+    const loginData = await loginResp.json();
+    if (loginData.code !== '200') throw new Error('login: ' + loginData.status);
+    dbg('API login OK');
+    apiSid = sid;
+
+    // Step 3: Get channels
+    const chResp = await fetch(`${API_BASE}/api/channel/get?sid=${sid}`, {credentials:'omit'});
+    if (!chResp.ok) throw new Error(`channel/get HTTP ${chResp.status}`);
+    const chData = await chResp.json();
+    if (chData.code !== '200') throw new Error('channel/get: ' + chData.status);
+
+    const chList = (chData.channels || []).map(c => c.name).sort();
+    dbg(`Got ${chList.length} channels: ${chList.join(', ')}`);
+
+    // Populate dropdown
+    sel.innerHTML = '';
+    chList.forEach(name => {
+      const opt = document.createElement('option');
+      opt.value = name; opt.textContent = name;
+      sel.appendChild(opt);
+    });
+    const customOpt = document.createElement('option');
+    customOpt.value = '__custom__'; customOpt.textContent = '— Custom channel…';
+    sel.appendChild(customOpt);
+
+    // Auto-select Dispatch if present, else first
+    const preferred = ['Dispatch','CallOps','Command'];
+    const found = preferred.find(p => chList.includes(p));
+    if (found) sel.value = found; else if (chList.length) sel.value = chList[0];
+
+    status.textContent = `✓ ${chList.length} channel${chList.length!==1?'s':''} loaded`;
+    status.style.color = 'var(--green)';
+  } catch(e) {
+    dbg('Channel fetch error: ' + e.message);
+    status.textContent = '⚠ Could not load channels: ' + e.message;
+    status.style.color = 'var(--amber)';
+    // Fallback options
+    if (sel.options.length <= 1) {
+      ['Dispatch','CallOps','Command','Tactical','Admin'].forEach(name => {
+        const opt = document.createElement('option');
+        opt.value = name; opt.textContent = name; sel.appendChild(opt);
+      });
+      const customOpt = document.createElement('option');
+      customOpt.value = '__custom__'; customOpt.textContent = '— Custom channel…';
+      sel.appendChild(customOpt);
+      sel.value = 'Dispatch';
+    }
+  } finally {
+    spinner.style.display = 'none';
+  }
+}
+
+// Trigger channel fetch when both username and password are filled
+let fetchDebounce = null;
+function onCredentialInput() {
+  const user = document.getElementById('l-user').value.trim();
+  const pass = document.getElementById('l-pass').value;
+  if (user && pass) {
+    clearTimeout(fetchDebounce);
+    fetchDebounce = setTimeout(() => fetchChannelsFromAPI(user, pass), 600);
+  }
+}
+
 // Show/hide password
 function togglePass() {
   const inp = document.getElementById('l-pass');
@@ -901,6 +1038,11 @@ function togglePass() {
 }
 
 // Show custom channel input when "Custom" selected
+// Fetch channels on credential input
+document.getElementById('l-user').addEventListener('blur', onCredentialInput);
+document.getElementById('l-pass').addEventListener('blur', onCredentialInput);
+document.getElementById('l-pass').addEventListener('change', onCredentialInput);
+
 document.getElementById('l-channel').addEventListener('change', function() {
   const custom = document.getElementById('l-channel-custom');
   custom.style.display = this.value === '__custom__' ? 'block' : 'none';
