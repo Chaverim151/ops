@@ -1,0 +1,792 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CallOps — Zello PTT Console</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  :root{
+    --bg:#0d1117;--bg2:#161b22;--bg3:#21262d;--bg4:#30363d;
+    --border:#30363d;--border2:#484f58;
+    --text:#e6edf3;--text2:#8b949e;--text3:#6e7681;
+    --green:#3fb950;--green-bg:#0f2a14;--green-dim:#1a3a1f;
+    --red:#f85149;--red-bg:#2d1117;
+    --amber:#d29922;--amber-bg:#2b1d0e;
+    --blue:#58a6ff;--blue-bg:#0d2044;
+    --purple:#bc8cff;
+    --accent:#238636;--accent-hover:#2ea043;
+    --radius:6px;--radius-lg:10px;
+  }
+  html,body{height:100%;background:var(--bg);color:var(--text);font-family:'IBM Plex Sans',sans-serif;font-size:14px;line-height:1.5}
+  
+  /* ── Layout ── */
+  .shell{display:grid;grid-template-rows:56px 1fr;height:100vh;overflow:hidden}
+  .topbar{display:flex;align-items:center;gap:12px;padding:0 20px;background:var(--bg2);border-bottom:1px solid var(--border);position:relative;z-index:10}
+  .topbar-logo{font-family:'IBM Plex Mono',monospace;font-weight:500;font-size:15px;color:var(--text);letter-spacing:.5px;display:flex;align-items:center;gap:8px}
+  .topbar-logo span{color:var(--green)}
+  .topbar-status{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text2)}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--border2)}
+  .dot.online{background:var(--green);box-shadow:0 0 6px var(--green)}
+  .dot.connecting{background:var(--amber);animation:pulse 1s infinite}
+  .dot.error{background:var(--red)}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+  
+  .main{display:grid;grid-template-columns:280px 1fr 260px;overflow:hidden}
+  
+  /* ── Sidebar panels ── */
+  .panel{background:var(--bg2);border-right:1px solid var(--border);overflow-y:auto;padding:16px}
+  .panel-right{border-right:none;border-left:1px solid var(--border)}
+  .panel-title{font-size:11px;font-weight:600;letter-spacing:.8px;text-transform:uppercase;color:var(--text3);margin-bottom:12px}
+  
+  /* ── Login card ── */
+  .login-wrap{display:flex;align-items:center;justify-content:center;height:100%;background:var(--bg)}
+  .login-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);padding:32px;width:380px}
+  .login-title{font-size:20px;font-weight:600;margin-bottom:4px}
+  .login-sub{color:var(--text2);font-size:13px;margin-bottom:24px}
+  label{font-size:12px;color:var(--text2);display:block;margin-bottom:4px}
+  input,select{width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);padding:8px 10px;font-size:13px;font-family:inherit;outline:none;transition:border-color .15s}
+  input:focus,select:focus{border-color:var(--blue)}
+  .field{margin-bottom:14px}
+  .btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:9px 16px;border-radius:var(--radius);font-size:13px;font-family:inherit;font-weight:500;cursor:pointer;border:none;transition:background .15s, transform .05s}
+  .btn-primary{background:var(--accent);color:#fff}
+  .btn-primary:hover{background:var(--accent-hover)}
+  .btn-primary:active{transform:scale(.97)}
+  .btn-primary:disabled{background:var(--bg4);color:var(--text3);cursor:not-allowed}
+  .btn-full{width:100%}
+  .btn-sm{padding:5px 10px;font-size:12px}
+  .btn-danger{background:var(--red-bg);color:var(--red);border:1px solid var(--red)}
+  .btn-ghost{background:transparent;color:var(--text2);border:1px solid var(--border2)}
+  .btn-ghost:hover{background:var(--bg3);color:var(--text)}
+
+  /* ── PTT Button ── */
+  .ptt-zone{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:20px;height:100%;background:var(--bg)}
+  .ptt-ring{position:relative;width:200px;height:200px;border-radius:50%;display:flex;align-items:center;justify-content:center;cursor:pointer;user-select:none;transition:transform .1s}
+  .ptt-ring::before{content:'';position:absolute;inset:-4px;border-radius:50%;border:2px solid var(--border2);transition:border-color .2s,box-shadow .2s}
+  .ptt-ring.active::before{border-color:var(--green);box-shadow:0 0 20px rgba(63,185,80,.3)}
+  .ptt-ring.rx::before{border-color:var(--blue);box-shadow:0 0 20px rgba(88,166,255,.3)}
+  .ptt-inner{width:160px;height:160px;border-radius:50%;background:var(--bg3);border:2px solid var(--border);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;transition:background .2s,border-color .2s}
+  .ptt-ring.active .ptt-inner{background:var(--green-bg);border-color:var(--green)}
+  .ptt-ring.rx .ptt-inner{background:var(--blue-bg);border-color:var(--blue)}
+  .ptt-icon{font-size:40px;line-height:1}
+  .ptt-label{font-size:12px;font-weight:500;letter-spacing:.5px;color:var(--text2);text-transform:uppercase}
+  .ptt-ring.active .ptt-label{color:var(--green)}
+  .ptt-ring.rx .ptt-label{color:var(--blue)}
+  
+  .ptt-hint{font-size:12px;color:var(--text3);text-align:center}
+  .ptt-hint kbd{background:var(--bg3);border:1px solid var(--border2);border-radius:4px;padding:2px 6px;font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--text2)}
+  
+  /* ── Waveform ── */
+  .waveform-wrap{width:280px;height:48px;position:relative}
+  canvas.wave{width:100%;height:100%;border-radius:var(--radius)}
+  
+  /* ── Channel list ── */
+  .channel-item{display:flex;align-items:center;gap:10px;padding:10px;border-radius:var(--radius);cursor:pointer;transition:background .1s;margin-bottom:4px;border:1px solid transparent}
+  .channel-item:hover{background:var(--bg3)}
+  .channel-item.active{background:var(--bg3);border-color:var(--border)}
+  .channel-item.selected{background:var(--green-bg);border-color:var(--green)}
+  .ch-icon{width:36px;height:36px;border-radius:var(--radius);background:var(--bg4);display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0}
+  .ch-name{font-size:13px;font-weight:500}
+  .ch-users{font-size:11px;color:var(--text3)}
+  .ch-badge{margin-left:auto;font-size:10px;padding:2px 7px;border-radius:10px;background:var(--green-bg);color:var(--green);border:1px solid var(--green-dim);flex-shrink:0}
+  .ch-badge.rx{background:var(--blue-bg);color:var(--blue)}
+  
+  /* ── Member list ── */
+  .member-item{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)}
+  .member-item:last-child{border-bottom:none}
+  .avatar{width:32px;height:32px;border-radius:50%;background:var(--bg4);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;flex-shrink:0;color:var(--purple)}
+  .member-name{font-size:13px;font-weight:500}
+  .member-role{font-size:11px;color:var(--text3)}
+  .member-tx{margin-left:auto;font-size:10px;padding:2px 7px;border-radius:10px}
+  .member-tx.talking{background:var(--green-bg);color:var(--green);border:1px solid var(--green-dim)}
+  .member-tx.rx{background:var(--blue-bg);color:var(--blue)}
+  
+  /* ── Activity log ── */
+  .log-wrap{display:flex;flex-direction:column;gap:2px;max-height:calc(100vh - 200px);overflow-y:auto}
+  .log-item{font-size:12px;padding:6px 8px;border-radius:var(--radius);border-left:2px solid transparent}
+  .log-item.tx{border-left-color:var(--green);background:var(--green-bg)}
+  .log-item.rx{border-left-color:var(--blue);background:var(--blue-bg)}
+  .log-item.sys{border-left-color:var(--border2);background:var(--bg3);color:var(--text2)}
+  .log-item.err{border-left-color:var(--red);background:var(--red-bg);color:var(--red)}
+  .log-time{font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--text3);margin-right:6px}
+  .log-user{font-weight:600}
+  
+  /* ── Channel header in center ── */
+  .center-header{display:flex;align-items:center;gap:12px;padding:14px 20px;border-bottom:1px solid var(--border);background:var(--bg2)}
+  .center-ch-name{font-size:15px;font-weight:600}
+  .center-ch-meta{font-size:12px;color:var(--text2)}
+  
+  /* ── Misc ── */
+  .tag{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:10px;font-size:11px}
+  .tag-green{background:var(--green-bg);color:var(--green)}
+  .tag-amber{background:var(--amber-bg);color:var(--amber)}
+  .tag-red{background:var(--red-bg);color:var(--red)}
+  .tag-blue{background:var(--blue-bg);color:var(--blue)}
+  .divider{height:1px;background:var(--border);margin:12px 0}
+  .hidden{display:none!important}
+  
+  #add-channel-row{display:flex;gap:6px;margin-top:8px}
+  #add-channel-row input{flex:1}
+  
+  /* ── RX audio flash ── */
+  @keyframes rxflash{0%{opacity:1}100%{opacity:0}}
+  .rx-flash{animation:rxflash .4s ease-out forwards}
+</style>
+</head>
+<body>
+
+<!-- ═══════════════════ LOGIN SCREEN ═══════════════════ -->
+<div id="login-screen" class="login-wrap">
+  <div class="login-card">
+    <div class="login-title">🎙 CallOps Radio</div>
+    <div class="login-sub">Zello Work PTT Console — <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--text3)">chaverimofmiddlesexcounty</span></div>
+    <div class="field">
+      <label>Username</label>
+      <input id="l-user" type="text" placeholder="your.username" autocomplete="username">
+    </div>
+    <div class="field">
+      <label>Password</label>
+      <input id="l-pass" type="password" placeholder="••••••••" autocomplete="current-password">
+    </div>
+    <div class="field">
+      <label>Channel to join</label>
+      <input id="l-channel" type="text" placeholder="CallOps" value="CallOps">
+    </div>
+    <div id="login-error" style="color:var(--red);font-size:12px;margin-bottom:10px;display:none"></div>
+    <button class="btn btn-primary btn-full" id="login-btn" onclick="doLogin()">Connect to Channel</button>
+    <div style="margin-top:12px;font-size:11px;color:var(--text3);text-align:center">Hold <kbd style="background:var(--bg3);border:1px solid var(--border2);border-radius:3px;padding:1px 5px;font-family:'IBM Plex Mono',monospace">Space</kbd> or tap the button to transmit</div>
+  </div>
+</div>
+
+<!-- ═══════════════════ MAIN APP ═══════════════════ -->
+<div id="app-screen" class="shell hidden">
+  <!-- Top bar -->
+  <div class="topbar">
+    <div class="topbar-logo">🎙 <span>Call</span>Ops Radio</div>
+    <div style="margin-left:16px;font-size:12px;color:var(--text2)">
+      <span id="bar-network" style="font-family:'IBM Plex Mono',monospace">chaverimofmiddlesexcounty</span>
+    </div>
+    <div id="bar-channel-badge" class="tag tag-green" style="font-size:11px"></div>
+    <div class="topbar-status">
+      <div class="dot" id="ws-dot"></div>
+      <span id="ws-label">—</span>
+      <span style="color:var(--border2)">|</span>
+      <span id="bar-user" style="font-size:12px;color:var(--text)"></span>
+      <button class="btn btn-ghost btn-sm" onclick="doLogout()" style="margin-left:6px">Disconnect</button>
+    </div>
+  </div>
+
+  <!-- Main grid -->
+  <div class="main">
+    <!-- Left: channels & members -->
+    <div class="panel">
+      <div class="panel-title">Channels</div>
+      <div id="channel-list"></div>
+      <div id="add-channel-row">
+        <input id="extra-channel" type="text" placeholder="Add channel…">
+        <button class="btn btn-ghost btn-sm" onclick="addExtraChannel()">+</button>
+      </div>
+
+      <div class="divider"></div>
+      <div class="panel-title">Members online</div>
+      <div id="member-list"></div>
+    </div>
+
+    <!-- Center: PTT -->
+    <div style="display:flex;flex-direction:column;background:var(--bg)">
+      <div class="center-header">
+        <div>
+          <div class="center-ch-name" id="active-ch-name">—</div>
+          <div class="center-ch-meta" id="active-ch-meta">Select a channel</div>
+        </div>
+        <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
+          <span class="tag" id="rx-tag" style="display:none">
+            <span class="dot rx"></span> Receiving
+          </span>
+          <span class="tag tag-green" id="tx-tag" style="display:none">
+            <span class="dot online"></span> Transmitting
+          </span>
+        </div>
+      </div>
+
+      <div class="ptt-zone" style="flex:1">
+        <div class="ptt-ring" id="ptt-btn"
+          onmousedown="startTX()" onmouseup="stopTX()" onmouseleave="stopTX()"
+          ontouchstart="startTX(event)" ontouchend="stopTX()">
+          <div class="ptt-inner">
+            <div class="ptt-icon" id="ptt-icon">🎙</div>
+            <div class="ptt-label" id="ptt-lbl">PUSH TO TALK</div>
+          </div>
+        </div>
+
+        <div class="waveform-wrap">
+          <canvas id="wave-canvas" class="wave" width="560" height="96" style="background:var(--bg3)"></canvas>
+        </div>
+        <div class="ptt-hint">Hold <kbd>Space</kbd> to transmit &nbsp;·&nbsp; Click &amp; hold button to talk</div>
+        
+        <div style="display:flex;gap:10px;margin-top:4px">
+          <div id="meter-wrap" style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text2)">
+            <span>Input</span>
+            <div style="width:120px;height:6px;background:var(--bg3);border-radius:3px;overflow:hidden">
+              <div id="level-bar" style="height:100%;width:0%;background:var(--green);transition:width .05s;border-radius:3px"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right: activity log -->
+    <div class="panel panel-right">
+      <div class="panel-title">Activity Log</div>
+      <div class="log-wrap" id="log-list"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ══════════════════════════════════════════════════
+//  CONFIG
+// ══════════════════════════════════════════════════
+const NETWORK = 'chaverimofmiddlesexcounty';
+const API_BASE = `https://${NETWORK}.zellowork.com/api`;
+const WS_URL   = `wss://zellowork.io/ws/${NETWORK}`;
+
+// ══════════════════════════════════════════════════
+//  STATE
+// ══════════════════════════════════════════════════
+let ws = null, wsState = 'disconnected';
+let seqCounter = 1;
+let sessionUser = '', activeChannel = '';
+let isTX = false, isRX = false;
+let audioCtx = null, analyser = null;
+let micStream = null, micSource = null;
+let opusEncoder = null;                      // AudioWorkletNode for encoding
+let rxDecoder = null;                        // for receiving Opus
+let pendingStreams = {};                      // stream_id → AudioBuffer queue
+let waveAnim = null;
+let members = {};                            // username → {name, talking}
+let channels = {};                           // name → {users_online, status}
+let txStreamId = null;
+let txPacketId = 0;
+let keyHeld = false;
+let scriptNodeTX = null;
+let rxAudioQ = {};                           // stream_id → decoded PCM queue
+
+// ══════════════════════════════════════════════════
+//  LOGIN / LOGOUT
+// ══════════════════════════════════════════════════
+async function doLogin() {
+  const user = document.getElementById('l-user').value.trim();
+  const pass = document.getElementById('l-pass').value;
+  const ch   = document.getElementById('l-channel').value.trim() || 'CallOps';
+  if (!user || !pass) return showLoginErr('Username and password required');
+
+  const btn = document.getElementById('login-btn');
+  btn.disabled = true; btn.textContent = 'Connecting…';
+
+  sessionUser = user;
+  activeChannel = ch;
+  channels = {}; members = {};
+
+  showLoginErr('');
+
+  try {
+    await connectWS(user, pass, [ch]);
+  } catch(e) {
+    showLoginErr('Connection failed: ' + e.message);
+    btn.disabled = false; btn.textContent = 'Connect to Channel';
+  }
+}
+
+function showLoginErr(msg) {
+  const el = document.getElementById('login-error');
+  el.textContent = msg; el.style.display = msg ? 'block' : 'none';
+}
+
+function doLogout() {
+  if (ws) { try { ws.send(JSON.stringify({command:'logout'})); } catch(e){} ws.close(); ws = null; }
+  stopAudioContext();
+  document.getElementById('login-screen').classList.remove('hidden');
+  document.getElementById('app-screen').classList.add('hidden');
+  document.getElementById('login-btn').disabled = false;
+  document.getElementById('login-btn').textContent = 'Connect to Channel';
+  isTX = false; isRX = false;
+}
+
+// ══════════════════════════════════════════════════
+//  WEBSOCKET
+// ══════════════════════════════════════════════════
+function connectWS(user, pass, channelArr) {
+  return new Promise((resolve, reject) => {
+    setWSState('connecting');
+    ws = new WebSocket(WS_URL);
+    ws.binaryType = 'arraybuffer';
+
+    ws.onopen = () => {
+      const logon = {command:'logon', seq:seqCounter++, username:user, password:pass, channels:channelArr, platform_name:'CallOps Web Radio'};
+      ws.send(JSON.stringify(logon));
+    };
+
+    ws.onmessage = (ev) => {
+      if (typeof ev.data === 'string') {
+        handleCtrl(JSON.parse(ev.data), resolve, reject);
+      } else {
+        handleBinary(ev.data);
+      }
+    };
+
+    ws.onerror = () => { setWSState('error'); reject(new Error('WebSocket error')); };
+    ws.onclose = (e) => {
+      setWSState('disconnected');
+      addLog('sys', '', `Disconnected (${e.code})`);
+      isTX = false; isRX = false; updatePTTUI();
+    };
+  });
+}
+
+function handleCtrl(msg, resolve, reject) {
+  if (msg.seq === 1) {
+    if (msg.success) {
+      setWSState('online');
+      document.getElementById('login-screen').classList.add('hidden');
+      document.getElementById('app-screen').classList.remove('hidden');
+      document.getElementById('bar-user').textContent = sessionUser;
+      document.getElementById('bar-channel-badge').textContent = '# ' + activeChannel;
+      document.getElementById('active-ch-name').textContent = activeChannel;
+      document.getElementById('active-ch-meta').textContent = 'Waiting for channel status…';
+      addLog('sys','','Connected as ' + sessionUser);
+      initWaveCanvas();
+      initAudioContext();
+      resolve();
+    } else {
+      setWSState('error');
+      const err = msg.error || 'Authentication failed';
+      showLoginErr(err === 'not authorized' ? 'Invalid username or password' : err);
+      ws.close(); ws = null;
+      document.getElementById('login-btn').disabled = false;
+      document.getElementById('login-btn').textContent = 'Connect to Channel';
+      reject(new Error(err));
+    }
+    return;
+  }
+
+  switch (msg.command) {
+    case 'on_channel_status':
+      onChannelStatus(msg); break;
+    case 'on_stream_start':
+      onStreamStart(msg); break;
+    case 'on_stream_stop':
+      onStreamStop(msg); break;
+    case 'on_text_message':
+      addLog('rx', msg.from, `💬 ${msg.text}`); break;
+    case 'on_error':
+      addLog('err','', msg.error); break;
+    default:
+      if (msg.stream_id && msg.success && !msg.error) {
+        // start_stream ack
+        txStreamId = msg.stream_id;
+      }
+  }
+}
+
+// ══════════════════════════════════════════════════
+//  CHANNEL STATUS
+// ══════════════════════════════════════════════════
+function onChannelStatus(msg) {
+  channels[msg.channel] = {users_online: msg.users_online, status: msg.status};
+  if (msg.channel === activeChannel) {
+    document.getElementById('active-ch-meta').textContent =
+      msg.status === 'online' ? `${msg.users_online} user${msg.users_online!==1?'s':''} online` : 'Offline';
+    addLog('sys','', `Channel ${msg.channel} is ${msg.status} (${msg.users_online} online)`);
+  }
+  renderChannels();
+}
+
+// ══════════════════════════════════════════════════
+//  INCOMING STREAM (RX)
+// ══════════════════════════════════════════════════
+function onStreamStart(msg) {
+  if (msg.from === sessionUser) return;
+  isRX = true;
+  document.getElementById('rx-tag').style.display='';
+  updateMemberTalking(msg.from, 'rx');
+  addLog('rx', msg.from, `Transmitting on ${msg.channel}`);
+  rxAudioQ[msg.stream_id] = {from: msg.from, channel: msg.channel, pkts:[], codehdr: msg.codec_header, packetDur: msg.packet_duration};
+  updatePTTUI(null,'rx');
+}
+
+function onStreamStop(msg) {
+  if (rxAudioQ[msg.stream_id]) {
+    const info = rxAudioQ[msg.stream_id];
+    updateMemberTalking(info.from, null);
+    delete rxAudioQ[msg.stream_id];
+  }
+  if (Object.keys(rxAudioQ).length === 0) {
+    isRX = false;
+    document.getElementById('rx-tag').style.display='none';
+    updatePTTUI();
+  }
+}
+
+function handleBinary(buf) {
+  const view = new DataView(buf);
+  const type = view.getUint8(0);
+  if (type === 0x01) {
+    const streamId = view.getUint32(1);
+    const audio = buf.slice(9);
+    if (rxAudioQ[streamId]) {
+      rxAudioQ[streamId].pkts.push(audio);
+      decodeAndPlayOpus(streamId, audio, rxAudioQ[streamId]);
+    }
+  }
+}
+
+// Simple Opus→PCM decode via AudioContext (browser native)
+let opusDecoderMap = {};
+function decodeAndPlayOpus(streamId, opusBuf, info) {
+  if (!audioCtx) return;
+  // Wrap raw opus in a minimal OGG or try WebCodecs if available
+  if (typeof AudioDecoder !== 'undefined') {
+    if (!opusDecoderMap[streamId]) {
+      opusDecoderMap[streamId] = {chunks:[]};
+      const decoder = new AudioDecoder({
+        output:(audioData) => {
+          const floatBuf = new Float32Array(audioData.numberOfFrames);
+          audioData.copyTo(floatBuf, {planeIndex:0});
+          playPCM(floatBuf, audioData.sampleRate);
+          audioData.close();
+        },
+        error:(e) => {}
+      });
+      decoder.configure({codec:'opus', sampleRate:16000, numberOfChannels:1});
+      opusDecoderMap[streamId].dec = decoder;
+    }
+    const dec = opusDecoderMap[streamId].dec;
+    if (dec.state === 'configured') {
+      try {
+        dec.decode(new EncodedAudioChunk({type:'key',timestamp:Date.now()*1000,data:opusBuf}));
+      } catch(e){}
+    }
+  }
+}
+
+function playPCM(floatBuf, sampleRate) {
+  if (!audioCtx) return;
+  const abuf = audioCtx.createBuffer(1, floatBuf.length, sampleRate||16000);
+  abuf.copyToChannel(floatBuf, 0);
+  const src = audioCtx.createBufferSource();
+  src.buffer = abuf;
+  src.connect(audioCtx.destination);
+  src.start();
+}
+
+// ══════════════════════════════════════════════════
+//  TX — PUSH TO TALK
+// ══════════════════════════════════════════════════
+async function startTX() {
+  if (isTX || !ws || wsState !== 'online') return;
+  if (isRX) { addLog('sys','','Channel busy — wait for others to finish'); return; }
+  isTX = true;
+  updatePTTUI('tx');
+  document.getElementById('tx-tag').style.display='';
+  addLog('tx', sessionUser, `Transmitting on ${activeChannel}`);
+
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia({audio:{sampleRate:16000,channelCount:1,echoCancellation:true,noiseSuppression:true},video:false});
+  } catch(e) {
+    addLog('err','','Microphone access denied: ' + e.message);
+    isTX = false; updatePTTUI(); document.getElementById('tx-tag').style.display='none';
+    return;
+  }
+
+  // Init encoder context
+  const encCtx = new AudioContext({sampleRate:16000});
+  micSource = encCtx.createMediaStreamSource(micStream);
+
+  // Analyser for visualisation
+  analyser = encCtx.createAnalyser();
+  analyser.fftSize = 256;
+  micSource.connect(analyser);
+
+  // Send start_stream
+  const codecHeader = buildCodecHeader(16000, 1, 60); // 16kHz, 1 frame, 60ms
+  const startCmd = {command:'start_stream', seq:seqCounter++, channel:activeChannel, type:'audio', codec:'opus', codec_header:codecHeader, packet_duration:60};
+  ws.send(JSON.stringify(startCmd));
+
+  // Use ScriptProcessorNode to capture & encode PCM to Opus
+  scriptNodeTX = encCtx.createScriptProcessor(4096, 1, 1);
+  let packetNum = 0;
+  const resampled = [];
+
+  // We'll use WebCodecs AudioEncoder if available, else send raw PCM (fallback)
+  let audioEnc = null;
+  if (typeof AudioEncoder !== 'undefined') {
+    audioEnc = new AudioEncoder({
+      output:(chunk, meta) => {
+        if (!isTX || !ws || txStreamId === null) return;
+        const raw = new Uint8Array(chunk.byteLength);
+        chunk.copyTo(raw);
+        sendAudioPacket(raw, packetNum++);
+      },
+      error:(e) => {}
+    });
+    audioEnc.configure({codec:'opus',sampleRate:16000,numberOfChannels:1,bitrate:16000});
+  }
+
+  scriptNodeTX.onaudioprocess = (e) => {
+    if (!isTX) return;
+    const inputData = e.inputBuffer.getChannelData(0);
+    if (audioEnc && audioEnc.state === 'configured') {
+      const audioData = new AudioData({format:'f32-planar', sampleRate:16000, numberOfFrames:inputData.length, numberOfChannels:1, timestamp:Date.now()*1000, data:inputData});
+      audioEnc.encode(audioData);
+      audioData.close();
+    }
+    updateLevelMeter(inputData);
+  };
+
+  micSource.connect(scriptNodeTX);
+  scriptNodeTX.connect(encCtx.destination);
+  window._txEncCtx = encCtx;
+  window._audioEnc = audioEnc;
+  startWaveAnim();
+}
+
+function stopTX() {
+  if (!isTX) return;
+  isTX = false;
+  document.getElementById('tx-tag').style.display='none';
+  updatePTTUI();
+  document.getElementById('level-bar').style.width = '0%';
+
+  if (window._audioEnc) { try { window._audioEnc.flush(); window._audioEnc.close(); } catch(e){} window._audioEnc = null; }
+  if (scriptNodeTX) { try { scriptNodeTX.disconnect(); } catch(e){} scriptNodeTX = null; }
+  if (micSource) { try { micSource.disconnect(); } catch(e){} micSource = null; }
+  if (micStream) { micStream.getTracks().forEach(t=>t.stop()); micStream = null; }
+  if (window._txEncCtx) { try { window._txEncCtx.close(); } catch(e){} window._txEncCtx = null; }
+
+  if (ws && txStreamId !== null) {
+    ws.send(JSON.stringify({command:'stop_stream', seq:seqCounter++, stream_id:txStreamId, channel:activeChannel}));
+  }
+  txStreamId = null; txPacketId = 0;
+  addLog('tx', sessionUser, `Finished transmitting`);
+  stopWaveAnim();
+}
+
+function sendAudioPacket(opusData, pktNum) {
+  if (!ws || txStreamId === null) return;
+  const hdr = new ArrayBuffer(9);
+  const v = new DataView(hdr);
+  v.setUint8(0, 0x01);
+  v.setUint32(1, txStreamId);
+  v.setUint32(5, 0);  // packet_id = 0 (ignored by server)
+  const out = new Uint8Array(9 + opusData.length);
+  out.set(new Uint8Array(hdr), 0);
+  out.set(opusData, 9);
+  ws.send(out.buffer);
+}
+
+function buildCodecHeader(sampleRate, framesPerPacket, frameSizeMs) {
+  // 4-byte: sample_rate(16LE), frames_per_packet(8), frame_size_ms(8)
+  const buf = new ArrayBuffer(4);
+  const v = new DataView(buf);
+  v.setUint16(0, sampleRate, true);
+  v.setUint8(2, framesPerPacket);
+  v.setUint8(3, frameSizeMs);
+  return btoa(String.fromCharCode(...new Uint8Array(buf)));
+}
+
+// ══════════════════════════════════════════════════
+//  AUDIO CONTEXT
+// ══════════════════════════════════════════════════
+function initAudioContext() {
+  try { audioCtx = new AudioContext(); } catch(e) {}
+}
+function stopAudioContext() {
+  try { if (audioCtx) { audioCtx.close(); audioCtx = null; } } catch(e) {}
+}
+
+// ══════════════════════════════════════════════════
+//  WAVEFORM VISUALISER
+// ══════════════════════════════════════════════════
+function initWaveCanvas() {
+  const c = document.getElementById('wave-canvas');
+  c.width = 560; c.height = 96;
+}
+
+function drawIdleWave() {
+  const c = document.getElementById('wave-canvas');
+  if (!c) return;
+  const ctx = c.getContext('2d');
+  ctx.clearRect(0,0,c.width,c.height);
+  ctx.strokeStyle = '#30363d';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(0, c.height/2);
+  ctx.lineTo(c.width, c.height/2);
+  ctx.stroke();
+}
+
+function startWaveAnim() {
+  stopWaveAnim();
+  drawWaveFrame();
+}
+function stopWaveAnim() {
+  if (waveAnim) { cancelAnimationFrame(waveAnim); waveAnim = null; }
+  drawIdleWave();
+}
+
+function drawWaveFrame() {
+  const c = document.getElementById('wave-canvas');
+  if (!c) return;
+  const ctx = c.getContext('2d');
+  ctx.clearRect(0,0,c.width,c.height);
+  ctx.fillStyle = '#161b22';
+  ctx.fillRect(0,0,c.width,c.height);
+
+  let data;
+  if (analyser) {
+    data = new Uint8Array(analyser.frequencyBinCount);
+    analyser.getByteTimeDomainData(data);
+  } else {
+    data = new Uint8Array(128).fill(128);
+  }
+
+  const color = isTX ? '#3fb950' : isRX ? '#58a6ff' : '#484f58';
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  const sliceW = c.width / data.length;
+  let x = 0;
+  for (let i=0; i<data.length; i++) {
+    const v = data[i]/128.0;
+    const y = v * c.height/2;
+    i===0 ? ctx.moveTo(x,y) : ctx.lineTo(x,y);
+    x += sliceW;
+  }
+  ctx.stroke();
+
+  waveAnim = requestAnimationFrame(drawWaveFrame);
+}
+
+function updateLevelMeter(pcmData) {
+  let sum = 0;
+  for (let i=0; i<pcmData.length; i++) sum += pcmData[i]*pcmData[i];
+  const rms = Math.sqrt(sum/pcmData.length);
+  const pct = Math.min(100, rms * 400);
+  document.getElementById('level-bar').style.width = pct.toFixed(0) + '%';
+}
+
+// ══════════════════════════════════════════════════
+//  UI HELPERS
+// ══════════════════════════════════════════════════
+function setWSState(state) {
+  wsState = state;
+  const dot = document.getElementById('ws-dot');
+  const lbl = document.getElementById('ws-label');
+  dot.className = 'dot ' + state;
+  lbl.textContent = state === 'online' ? 'Connected' : state === 'connecting' ? 'Connecting…' : state === 'error' ? 'Error' : 'Disconnected';
+}
+
+function updatePTTUI(mode, rx) {
+  const btn = document.getElementById('ptt-btn');
+  const icon = document.getElementById('ptt-icon');
+  const lbl = document.getElementById('ptt-lbl');
+  btn.className = 'ptt-ring';
+  if (mode === 'tx') { btn.classList.add('active'); icon.textContent='📡'; lbl.textContent='TRANSMITTING'; }
+  else if (rx === 'rx' || isRX) { btn.classList.add('rx'); icon.textContent='🔊'; lbl.textContent='RECEIVING'; }
+  else { icon.textContent='🎙'; lbl.textContent='PUSH TO TALK'; }
+}
+
+function addLog(type, user, msg) {
+  const list = document.getElementById('log-list');
+  const t = new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false});
+  const item = document.createElement('div');
+  item.className = 'log-item ' + type;
+  item.innerHTML = `<span class="log-time">${t}</span>${user?`<span class="log-user">${escH(user)}</span> `:''}<span>${escH(msg)}</span>`;
+  list.prepend(item);
+  while (list.children.length > 200) list.removeChild(list.lastChild);
+}
+
+function escH(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+function renderChannels() {
+  const list = document.getElementById('channel-list');
+  list.innerHTML = '';
+  const names = Object.keys(channels).length ? Object.keys(channels) : [activeChannel];
+  names.forEach(ch => {
+    const info = channels[ch] || {users_online:0, status:'unknown'};
+    const div = document.createElement('div');
+    div.className = 'channel-item' + (ch === activeChannel ? ' selected' : '');
+    div.onclick = () => switchChannel(ch);
+    div.innerHTML = `<div class="ch-icon">#</div><div><div class="ch-name">${escH(ch)}</div><div class="ch-users">${info.users_online||0} online</div></div>${info.status==='online'?`<span class="ch-badge">${info.users_online||0}</span>`:''}`;
+    list.appendChild(div);
+  });
+}
+
+function updateMemberTalking(username, state) {
+  members[username] = {name:username, state};
+  renderMembers();
+}
+
+function renderMembers() {
+  const list = document.getElementById('member-list');
+  list.innerHTML = '';
+  const entries = Object.values(members);
+  if (!entries.length) {
+    list.innerHTML = '<div style="color:var(--text3);font-size:12px">No members detected yet</div>';
+    return;
+  }
+  entries.forEach(m => {
+    const init = m.name.substring(0,2).toUpperCase();
+    const div = document.createElement('div');
+    div.className = 'member-item';
+    div.innerHTML = `<div class="avatar">${init}</div><div><div class="member-name">${escH(m.name)}</div><div class="member-role">User</div></div>${m.state==='rx'?`<span class="member-tx talking">TX</span>`:m.state==='tx'?`<span class="member-tx rx">RX</span>`:''}`;
+    list.appendChild(div);
+  });
+}
+
+function switchChannel(ch) {
+  if (ch === activeChannel) return;
+  activeChannel = ch;
+  document.getElementById('active-ch-name').textContent = ch;
+  document.getElementById('bar-channel-badge').textContent = '# ' + ch;
+  addLog('sys','','Switched active channel to ' + ch);
+  renderChannels();
+}
+
+function addExtraChannel() {
+  const inp = document.getElementById('extra-channel');
+  const ch = inp.value.trim();
+  if (!ch || !ws || wsState !== 'online') return;
+  inp.value = '';
+  const cmd = {command:'logon', seq:seqCounter++, username:sessionUser, channels:[ch]};
+  // re-logon with new channel isn't proper; just add it to local list for display
+  if (!channels[ch]) channels[ch] = {users_online:0, status:'adding'};
+  // Actually send a logon adding the channel (Zello WS needs full reconnect or re-logon with updated channel list)
+  addLog('sys','','Requesting channel: ' + ch);
+  ws.send(JSON.stringify({command:'logon', seq:seqCounter++, username:sessionUser, channels:Object.keys(channels).concat([ch])}));
+  renderChannels();
+}
+
+// ══════════════════════════════════════════════════
+//  KEYBOARD
+// ══════════════════════════════════════════════════
+document.addEventListener('keydown', (e) => {
+  if (e.code === 'Space' && !keyHeld && !e.target.matches('input,textarea')) {
+    e.preventDefault(); keyHeld = true; startTX();
+  }
+});
+document.addEventListener('keyup', (e) => {
+  if (e.code === 'Space') { keyHeld = false; stopTX(); }
+});
+
+// Resume AudioContext on user interaction (browser autoplay policy)
+document.addEventListener('click', () => { if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume(); }, {once:false});
+
+// Init idle wave
+setTimeout(drawIdleWave, 100);
+</script>
+</body>
+</html>
