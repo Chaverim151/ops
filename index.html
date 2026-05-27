@@ -148,11 +148,22 @@
     </div>
     <div class="field">
       <label>Password</label>
-      <input id="l-pass" type="password" placeholder="••••••••" autocomplete="current-password">
+      <div style="position:relative">
+        <input id="l-pass" type="password" placeholder="••••••••" autocomplete="current-password" style="padding-right:40px">
+        <button type="button" onclick="togglePass()" id="show-pass-btn" title="Show / hide password" style="position:absolute;right:0;top:0;height:100%;width:38px;background:none;border:none;cursor:pointer;color:var(--text3);display:flex;align-items:center;justify-content:center;font-size:16px">👁</button>
+      </div>
     </div>
     <div class="field">
       <label>Channel to join</label>
-      <input id="l-channel" type="text" placeholder="CallOps" value="CallOps">
+      <select id="l-channel" style="appearance:none;-webkit-appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238b949e' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 10px center;padding-right:28px">
+        <option value="Dispatch">Dispatch</option>
+        <option value="CallOps">CallOps</option>
+        <option value="Command">Command</option>
+        <option value="Tactical">Tactical</option>
+        <option value="Admin">Admin</option>
+        <option value="__custom__">— Custom channel…</option>
+      </select>
+      <input id="l-channel-custom" type="text" placeholder="Enter channel name" style="margin-top:6px;display:none">
     </div>
     <div id="login-error" style="color:var(--red);font-size:12px;margin-bottom:10px;display:none"></div>
     <button class="btn btn-primary btn-full" id="login-btn" onclick="doLogin()">Connect to Channel</button>
@@ -288,7 +299,10 @@ let rxAudioQ = {};
 async function doLogin() {
   const user = document.getElementById('l-user').value.trim();
   const pass = document.getElementById('l-pass').value;
-  const ch   = document.getElementById('l-channel').value.trim() || 'CallOps';
+  const sel = document.getElementById('l-channel');
+  const ch = sel.value === '__custom__'
+    ? (document.getElementById('l-channel-custom').value.trim() || 'CallOps')
+    : (sel.value || 'CallOps');
   if (!user || !pass) return showLoginErr('Username and password required');
 
   const btn = document.getElementById('login-btn');
@@ -478,6 +492,7 @@ function handleCtrl(msg) {
 // ══════════════════════════════════════════════════
 function onChannelStatus(msg) {
   channels[msg.channel] = {users_online: msg.users_online, status: msg.status};
+  refreshChannelDropdown(Object.keys(channels));
   if (msg.channel === activeChannel) {
     document.getElementById('active-ch-meta').textContent =
       msg.status === 'online' ? `${msg.users_online} user${msg.users_online!==1?'s':''} online` : 'Offline';
@@ -869,6 +884,42 @@ document.addEventListener('click', () => { if (audioCtx && audioCtx.state === 's
 
 // Init idle wave
 setTimeout(drawIdleWave, 100);
+
+// Show/hide password
+function togglePass() {
+  const inp = document.getElementById('l-pass');
+  const btn = document.getElementById('show-pass-btn');
+  if (inp.type === 'password') {
+    inp.type = 'text';
+    btn.textContent = '🙈';
+    btn.title = 'Hide password';
+  } else {
+    inp.type = 'password';
+    btn.textContent = '👁';
+    btn.title = 'Show password';
+  }
+}
+
+// Show custom channel input when "Custom" selected
+document.getElementById('l-channel').addEventListener('change', function() {
+  const custom = document.getElementById('l-channel-custom');
+  custom.style.display = this.value === '__custom__' ? 'block' : 'none';
+  if (this.value === '__custom__') custom.focus();
+});
+
+// Fetch real channel list from API after login and update active channel dropdown
+function refreshChannelDropdown(chList) {
+  const sel = document.getElementById('l-channel');
+  // Keep custom option, rebuild the rest
+  const knownVals = new Set([...sel.options].map(o => o.value));
+  chList.forEach(name => {
+    if (!knownVals.has(name)) {
+      const opt = document.createElement('option');
+      opt.value = name; opt.textContent = name;
+      sel.insertBefore(opt, sel.querySelector('option[value="__custom__"]'));
+    }
+  });
+}
 </script>
 </body>
 </html>
