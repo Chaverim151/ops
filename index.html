@@ -157,13 +157,14 @@
       <label>Channel to join</label>
       <div style="position:relative">
         <select id="l-channel" style="appearance:none;-webkit-appearance:none;background-image:url(&quot;data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238b949e' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E&quot;);background-repeat:no-repeat;background-position:right 10px center;padding-right:28px">
-          <option value="" disabled selected>— enter credentials to load —</option>
+          <option value="dispatch">dispatch</option>
+          <option value="Dispatch">Dispatch</option>
           <option value="__custom__">— Custom channel…</option>
         </select>
         <div id="ch-spinner" style="display:none;position:absolute;right:28px;top:50%;transform:translateY(-50%);font-size:11px;color:var(--text3)">loading…</div>
       </div>
       <input id="l-channel-custom" type="text" placeholder="Enter channel name" style="margin-top:6px;display:none">
-      <div id="ch-fetch-status" style="font-size:11px;color:var(--text3);margin-top:4px"></div>
+      <div id="ch-fetch-status" style="font-size:11px;color:var(--text3);margin-top:4px">Channels update automatically after first login</div>
     </div>
     <div id="login-error" style="color:var(--red);font-size:12px;margin-bottom:10px;display:none"></div>
     <button class="btn btn-primary btn-full" id="login-btn" onclick="doLogin()">Connect to Channel</button>
@@ -300,9 +301,11 @@ async function doLogin() {
   const user = document.getElementById('l-user').value.trim();
   const pass = document.getElementById('l-pass').value;
   const sel = document.getElementById('l-channel');
-  const ch = sel.value === '__custom__'
-    ? (document.getElementById('l-channel-custom').value.trim() || 'CallOps')
-    : (sel.value || 'CallOps');
+  const customVal = document.getElementById('l-channel-custom').value.trim();
+  const ch = (sel.value === '__custom__')
+    ? (customVal || '')
+    : (sel.value || '');
+  if (!ch) return showLoginErr('Please select or enter a channel name');
   if (!user || !pass) return showLoginErr('Username and password required');
 
   const btn = document.getElementById('login-btn');
@@ -363,7 +366,7 @@ function connectWS(url, user, pass, channelArr) {
   return new Promise((resolve, reject) => {
     loginResolve = resolve;
     loginReject = reject;
-    logonResolved = false;
+    logonResolved = false;   // reset per attempt
     setWSState('connecting');
 
     let opened = false;
@@ -411,6 +414,10 @@ function connectWS(url, user, pass, channelArr) {
       if (!logonResolved) {
         logonResolved = true;
         clearTimeout(connectTimeout);
+        // Detach handlers before rejecting so this WS doesn't interfere with next attempt
+        ws.onmessage = null; ws.onclose = null; ws.onerror = null;
+        try { ws.close(); } catch(_) {}
+        ws = null;
         reject(new Error('WebSocket connection refused or network error'));
       }
     };
@@ -435,8 +442,9 @@ function connectWS(url, user, pass, channelArr) {
 
 function handleCtrl(msg) {
   // Logon response: matches our logon seq OR has success/error at top level without a command
-  const isLogonResponse = (msg.seq !== undefined && (msg.seq === logonSeq || msg.seq === 1)) ||
-    (!msg.command && (msg.success !== undefined || msg.error !== undefined) && !logonResolved);
+  // Logon ack has no "command" field — just {seq, success} or {seq, error}
+  const isLogonResponse = !msg.command &&
+    (msg.success !== undefined || msg.error !== undefined);
 
   if (isLogonResponse && !logonResolved) {
     logonResolved = true;
@@ -453,10 +461,16 @@ function handleCtrl(msg) {
       renderChannels();
       initWaveCanvas();
       initAudioContext();
+      // Pre-acquire mic now so first PTT is instant (no permission prompt during transmission)
+      acquireMic().then(ok => {
+        if (ok) addLog('sys','','Microphone ready');
+        else addLog('err','','Grant mic permission then refresh to use PTT');
+      });
       if (loginResolve) loginResolve();
     } else {
       const err = msg.error || 'Authentication failed';
-      const friendly = err === 'not authorized' ? 'Invalid username or password'
+      const friendly = err === 'not authorized' || err === 'invalid credentials'
+        ? 'Invalid username or password — check your Zello Work credentials'
         : err === 'not enough params' ? 'Missing username or password'
         : err;
       showLoginErr(friendly);
@@ -492,6 +506,21 @@ function handleCtrl(msg) {
 // ══════════════════════════════════════════════════
 function onChannelStatus(msg) {
   channels[msg.channel] = {users_online: msg.users_online, status: msg.status};
+  // Update login dropdown with real channels discovered over WebSocket
+  const sel = document.getElementById('l-channel');
+  const knownVals = new Set([...sel.options].map(o => o.value).filter(v => v !== '__custom__'));
+  if (!knownVals.has(msg.channel)) {
+    const opt = document.createElement('option');
+    opt.value = msg.channel; opt.textContent = msg.channel;
+    const customOpt = sel.querySelector('option[value="__custom__"]');
+    if (customOpt) sel.insertBefore(opt, customOpt); else sel.appendChild(opt);
+    // Remove placeholder if present
+    const placeholder = sel.querySelector('option[value=""]');
+    if (placeholder) placeholder.remove();
+    // Set status line
+    const st = document.getElementById('ch-fetch-status');
+    if (st) { st.textContent = `✓ ${Object.keys(channels).length} channel(s) found on network`; st.style.color='var(--green)'; }
+  }
   refreshChannelDropdown(Object.keys(channels));
   if (msg.channel === activeChannel) {
     document.getElementById('active-ch-meta').textContent =
@@ -581,93 +610,122 @@ function playPCM(floatBuf, sampleRate) {
 
 // ══════════════════════════════════════════════════
 //  TX — PUSH TO TALK
+//  Mic is acquired ONCE on login and kept alive.
+//  startTX / stopTX only start/stop encoding.
 // ══════════════════════════════════════════════════
+
+// Persistent mic objects — set up once, reused every PTT press
+let txEncCtx = null;   // AudioContext for encoding (16 kHz)
+let txScriptNode = null;
+let txAudioEnc = null;
+let txPacketNum = 0;
+
+async function acquireMic() {
+  if (micStream) return true;  // already have it
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia({
+      audio: {sampleRate:16000, channelCount:1, echoCancellation:true, noiseSuppression:true},
+      video: false
+    });
+    dbg('Mic acquired');
+    // Build persistent encoder context
+    txEncCtx = new AudioContext({sampleRate:16000});
+    micSource = txEncCtx.createMediaStreamSource(micStream);
+    analyser  = txEncCtx.createAnalyser();
+    analyser.fftSize = 256;
+    micSource.connect(analyser);
+
+    // ScriptProcessor — stays connected but onaudioprocess only sends when isTX
+    txScriptNode = txEncCtx.createScriptProcessor(4096, 1, 1);
+    txScriptNode.onaudioprocess = (e) => {
+      const inputData = e.inputBuffer.getChannelData(0);
+      if (isTX) {
+        if (txAudioEnc && txAudioEnc.state === 'configured') {
+          const ad = new AudioData({
+            format:'f32-planar', sampleRate:16000,
+            numberOfFrames:inputData.length, numberOfChannels:1,
+            timestamp: Date.now()*1000, data:inputData
+          });
+          txAudioEnc.encode(ad);
+          ad.close();
+        }
+        updateLevelMeter(inputData);
+      } else {
+        updateLevelMeter(new Float32Array(inputData.length)); // zero meter when idle
+      }
+    };
+    micSource.connect(txScriptNode);
+    txScriptNode.connect(txEncCtx.destination);
+    return true;
+  } catch(e) {
+    addLog('err','','Mic access denied: ' + e.message);
+    dbg('getUserMedia error: ' + e.message);
+    return false;
+  }
+}
+
 async function startTX() {
   if (isTX || !ws || wsState !== 'online') return;
-  if (isRX) { addLog('sys','','Channel busy — wait for others to finish'); return; }
+  if (isRX) { addLog('sys','','Channel busy — wait for others'); return; }
+
+  // Acquire mic once — no repeated permission prompts
+  const ok = await acquireMic();
+  if (!ok) return;
+
   isTX = true;
+  txPacketNum = 0;
   updatePTTUI('tx');
-  document.getElementById('tx-tag').style.display='';
-  addLog('tx', sessionUser, `Transmitting on ${activeChannel}`);
+  document.getElementById('tx-tag').style.display = '';
 
-  try {
-    micStream = await navigator.mediaDevices.getUserMedia({audio:{sampleRate:16000,channelCount:1,echoCancellation:true,noiseSuppression:true},video:false});
-  } catch(e) {
-    addLog('err','','Microphone access denied: ' + e.message);
-    isTX = false; updatePTTUI(); document.getElementById('tx-tag').style.display='none';
-    return;
-  }
-
-  // Init encoder context
-  const encCtx = new AudioContext({sampleRate:16000});
-  micSource = encCtx.createMediaStreamSource(micStream);
-
-  // Analyser for visualisation
-  analyser = encCtx.createAnalyser();
-  analyser.fftSize = 256;
-  micSource.connect(analyser);
-
-  // Send start_stream
-  const codecHeader = buildCodecHeader(16000, 1, 60); // 16kHz, 1 frame, 60ms
-  const startCmd = {command:'start_stream', seq:seqCounter++, channel:activeChannel, type:'audio', codec:'opus', codec_header:codecHeader, packet_duration:60};
-  ws.send(JSON.stringify(startCmd));
-
-  // Use ScriptProcessorNode to capture & encode PCM to Opus
-  scriptNodeTX = encCtx.createScriptProcessor(4096, 1, 1);
-  let packetNum = 0;
-  const resampled = [];
-
-  // We'll use WebCodecs AudioEncoder if available, else send raw PCM (fallback)
-  let audioEnc = null;
+  // Fresh AudioEncoder for this transmission
+  if (txAudioEnc) { try { txAudioEnc.close(); } catch(_){} txAudioEnc = null; }
   if (typeof AudioEncoder !== 'undefined') {
-    audioEnc = new AudioEncoder({
-      output:(chunk, meta) => {
+    txAudioEnc = new AudioEncoder({
+      output: (chunk) => {
         if (!isTX || !ws || txStreamId === null) return;
         const raw = new Uint8Array(chunk.byteLength);
         chunk.copyTo(raw);
-        sendAudioPacket(raw, packetNum++);
+        sendAudioPacket(raw, txPacketNum++);
       },
-      error:(e) => {}
+      error: (e) => { dbg('AudioEncoder error: ' + e.message); }
     });
-    audioEnc.configure({codec:'opus',sampleRate:16000,numberOfChannels:1,bitrate:16000});
+    txAudioEnc.configure({codec:'opus', sampleRate:16000, numberOfChannels:1, bitrate:16000});
   }
 
-  scriptNodeTX.onaudioprocess = (e) => {
-    if (!isTX) return;
-    const inputData = e.inputBuffer.getChannelData(0);
-    if (audioEnc && audioEnc.state === 'configured') {
-      const audioData = new AudioData({format:'f32-planar', sampleRate:16000, numberOfFrames:inputData.length, numberOfChannels:1, timestamp:Date.now()*1000, data:inputData});
-      audioEnc.encode(audioData);
-      audioData.close();
-    }
-    updateLevelMeter(inputData);
-  };
+  // Tell Zello we're starting a stream
+  const codecHeader = buildCodecHeader(16000, 1, 60);
+  ws.send(JSON.stringify({
+    command:'start_stream', seq:seqCounter++,
+    channel:activeChannel, type:'audio',
+    codec:'opus', codec_header:codecHeader, packet_duration:60
+  }));
 
-  micSource.connect(scriptNodeTX);
-  scriptNodeTX.connect(encCtx.destination);
-  window._txEncCtx = encCtx;
-  window._audioEnc = audioEnc;
+  addLog('tx', sessionUser, 'Transmitting on ' + activeChannel);
   startWaveAnim();
 }
 
 function stopTX() {
   if (!isTX) return;
   isTX = false;
-  document.getElementById('tx-tag').style.display='none';
-  updatePTTUI();
+  document.getElementById('tx-tag').style.display = 'none';
   document.getElementById('level-bar').style.width = '0%';
+  updatePTTUI();
 
-  if (window._audioEnc) { try { window._audioEnc.flush(); window._audioEnc.close(); } catch(e){} window._audioEnc = null; }
-  if (scriptNodeTX) { try { scriptNodeTX.disconnect(); } catch(e){} scriptNodeTX = null; }
-  if (micSource) { try { micSource.disconnect(); } catch(e){} micSource = null; }
-  if (micStream) { micStream.getTracks().forEach(t=>t.stop()); micStream = null; }
-  if (window._txEncCtx) { try { window._txEncCtx.close(); } catch(e){} window._txEncCtx = null; }
-
-  if (ws && txStreamId !== null) {
-    ws.send(JSON.stringify({command:'stop_stream', seq:seqCounter++, stream_id:txStreamId, channel:activeChannel}));
+  // Flush encoder — don't close it, just null it so next press gets a fresh one
+  if (txAudioEnc) {
+    try { txAudioEnc.flush(); txAudioEnc.close(); } catch(_){}
+    txAudioEnc = null;
   }
-  txStreamId = null; txPacketId = 0;
-  addLog('tx', sessionUser, `Finished transmitting`);
+
+  // Signal end of stream to Zello
+  if (ws && txStreamId !== null) {
+    ws.send(JSON.stringify({
+      command:'stop_stream', seq:seqCounter++,
+      stream_id:txStreamId, channel:activeChannel
+    }));
+  }
+  txStreamId = null;
+  addLog('tx', sessionUser, 'Finished transmitting');
   stopWaveAnim();
 }
 
@@ -701,7 +759,13 @@ function initAudioContext() {
   try { audioCtx = new AudioContext(); } catch(e) {}
 }
 function stopAudioContext() {
+  try { if (txAudioEnc) { txAudioEnc.close(); txAudioEnc = null; } } catch(e) {}
+  try { if (txScriptNode) { txScriptNode.disconnect(); txScriptNode = null; } } catch(e) {}
+  try { if (micSource) { micSource.disconnect(); micSource = null; } } catch(e) {}
+  try { if (micStream) { micStream.getTracks().forEach(t=>t.stop()); micStream = null; } } catch(e) {}
+  try { if (txEncCtx) { txEncCtx.close(); txEncCtx = null; } } catch(e) {}
   try { if (audioCtx) { audioCtx.close(); audioCtx = null; } } catch(e) {}
+  analyser = null;
 }
 
 // ══════════════════════════════════════════════════
@@ -932,80 +996,125 @@ async function md5(str) {
 
 let apiSid = null;
 
+// CORS proxies to try in order
+const CORS_PROXIES = [
+  url => `https://corsproxy.io/?${encodeURIComponent(url)}`,
+  url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+  url => url  // direct last (works if hosted on same origin or server adds CORS headers)
+];
+
+async function apiFetch(path, opts = {}) {
+  const fullUrl = API_BASE + path;
+  let lastErr;
+  for (const proxy of CORS_PROXIES) {
+    const proxyUrl = proxy(fullUrl);
+    try {
+      const resp = await fetch(proxyUrl, {...opts, credentials:'omit'});
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const data = await resp.json();
+      return data;
+    } catch(e) {
+      dbg(`proxy failed (${proxyUrl.substring(0,40)}…): ${e.message}`);
+      lastErr = e;
+    }
+  }
+  throw lastErr;
+}
+
+async function apiPost(path, body) {
+  const fullUrl = API_BASE + path;
+  let lastErr;
+  for (const proxy of CORS_PROXIES) {
+    const proxyUrl = proxy(fullUrl);
+    try {
+      const resp = await fetch(proxyUrl, {
+        method: 'POST',
+        credentials: 'omit',
+        headers: {'Content-Type':'application/x-www-form-urlencoded'},
+        body
+      });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const data = await resp.json();
+      return data;
+    } catch(e) {
+      dbg(`proxy POST failed (${proxyUrl.substring(0,40)}…): ${e.message}`);
+      lastErr = e;
+    }
+  }
+  throw lastErr;
+}
+
+function populateChannelDropdown(chList) {
+  const sel = document.getElementById('l-channel');
+  sel.innerHTML = '';
+  chList.forEach(name => {
+    const opt = document.createElement('option');
+    opt.value = name; opt.textContent = name;
+    sel.appendChild(opt);
+  });
+  const customOpt = document.createElement('option');
+  customOpt.value = '__custom__'; customOpt.textContent = '— Custom channel…';
+  sel.appendChild(customOpt);
+  const preferred = ['Dispatch','dispatch','CallOps','Command','Everyone'];
+  const found = preferred.find(p => chList.map(c=>c.toLowerCase()).includes(p.toLowerCase()));
+  if (found) {
+    const match = chList.find(c => c.toLowerCase() === found.toLowerCase());
+    if (match) sel.value = match;
+  } else if (chList.length) {
+    sel.value = chList[0];
+  }
+}
+
 async function fetchChannelsFromAPI(username, password) {
   const status = document.getElementById('ch-fetch-status');
   const spinner = document.getElementById('ch-spinner');
   const sel = document.getElementById('l-channel');
   spinner.style.display = 'block';
-  status.textContent = 'Fetching channels from network…';
+  status.textContent = 'Fetching channels…';
+  status.style.color = 'var(--text3)';
 
   try {
     // Step 1: Get token
-    const tokenResp = await fetch(`${API_BASE}/api/user/gettoken`, {credentials:'omit'});
-    if (!tokenResp.ok) throw new Error(`gettoken HTTP ${tokenResp.status}`);
-    const tokenData = await tokenResp.json();
+    const tokenData = await apiFetch('/api/user/gettoken');
     if (tokenData.code !== '200') throw new Error('gettoken: ' + tokenData.status);
-    const token = tokenData.token;
-    const sid = tokenData.sid;
-    dbg('API token OK, sid=' + sid);
+    const { token, sid } = tokenData;
+    dbg('Token OK, sid=' + sid);
 
-    // Step 2: Login — password = md5( md5(password) + token + apikey )
+    // Step 2: Login with md5(md5(pass) + token + apikey)
     const passMd5 = await md5(password);
     const authHash = await md5(passMd5 + token + API_KEY);
-    const loginResp = await fetch(`${API_BASE}/api/user/login?sid=${sid}`, {
-      method: 'POST',
-      credentials: 'omit',
-      headers: {'Content-Type':'application/x-www-form-urlencoded'},
-      body: `username=${encodeURIComponent(username)}&password=${encodeURIComponent(authHash)}`
-    });
-    if (!loginResp.ok) throw new Error(`login HTTP ${loginResp.status}`);
-    const loginData = await loginResp.json();
-    if (loginData.code !== '200') throw new Error('login: ' + loginData.status);
-    dbg('API login OK');
+    const loginData = await apiPost(
+      `/api/user/login?sid=${sid}`,
+      `username=${encodeURIComponent(username)}&password=${encodeURIComponent(authHash)}`
+    );
+    if (loginData.code !== '200') throw new Error('Login failed: ' + loginData.status);
+    dbg('API auth OK');
     apiSid = sid;
 
-    // Step 3: Get channels
-    const chResp = await fetch(`${API_BASE}/api/channel/get?sid=${sid}`, {credentials:'omit'});
-    if (!chResp.ok) throw new Error(`channel/get HTTP ${chResp.status}`);
-    const chData = await chResp.json();
+    // Step 3: Get all channels
+    const chData = await apiFetch(`/api/channel/get?sid=${sid}`);
     if (chData.code !== '200') throw new Error('channel/get: ' + chData.status);
 
-    const chList = (chData.channels || []).map(c => c.name).sort();
-    dbg(`Got ${chList.length} channels: ${chList.join(', ')}`);
-
-    // Populate dropdown
-    sel.innerHTML = '';
-    chList.forEach(name => {
-      const opt = document.createElement('option');
-      opt.value = name; opt.textContent = name;
-      sel.appendChild(opt);
-    });
-    const customOpt = document.createElement('option');
-    customOpt.value = '__custom__'; customOpt.textContent = '— Custom channel…';
-    sel.appendChild(customOpt);
-
-    // Auto-select Dispatch if present, else first
-    const preferred = ['Dispatch','CallOps','Command'];
-    const found = preferred.find(p => chList.includes(p));
-    if (found) sel.value = found; else if (chList.length) sel.value = chList[0];
-
-    status.textContent = `✓ ${chList.length} channel${chList.length!==1?'s':''} loaded`;
+    const chList = (chData.channels || []).map(c => c.name).sort((a,b)=>a.localeCompare(b));
+    dbg(`Loaded ${chList.length} channels`);
+    populateChannelDropdown(chList);
+    status.textContent = `✓ ${chList.length} channel${chList.length!==1?'s':''} loaded from network`;
     status.style.color = 'var(--green)';
+
   } catch(e) {
-    dbg('Channel fetch error: ' + e.message);
-    status.textContent = '⚠ Could not load channels: ' + e.message;
+    dbg('Channel fetch failed: ' + e.message);
+    // Show manual entry hint instead of error — user can just type channel name
+    status.textContent = '⚠ Auto-load failed — type channel name below';
     status.style.color = 'var(--amber)';
-    // Fallback options
-    if (sel.options.length <= 1) {
-      ['Dispatch','CallOps','Command','Tactical','Admin'].forEach(name => {
-        const opt = document.createElement('option');
-        opt.value = name; opt.textContent = name; sel.appendChild(opt);
-      });
-      const customOpt = document.createElement('option');
-      customOpt.value = '__custom__'; customOpt.textContent = '— Custom channel…';
-      sel.appendChild(customOpt);
-      sel.value = 'Dispatch';
-    }
+    // Switch to custom mode automatically
+    sel.innerHTML = '';
+    const customOpt = document.createElement('option');
+    customOpt.value = '__custom__'; customOpt.textContent = '— Enter channel name manually —';
+    sel.appendChild(customOpt);
+    sel.value = '__custom__';
+    const customInput = document.getElementById('l-channel-custom');
+    customInput.style.display = 'block';
+    customInput.focus();
   } finally {
     spinner.style.display = 'none';
   }
@@ -1042,6 +1151,8 @@ function togglePass() {
 document.getElementById('l-user').addEventListener('blur', onCredentialInput);
 document.getElementById('l-pass').addEventListener('blur', onCredentialInput);
 document.getElementById('l-pass').addEventListener('change', onCredentialInput);
+document.getElementById('l-pass').addEventListener('keydown', e => { if(e.key==='Enter') { e.preventDefault(); onCredentialInput(); }});
+document.getElementById('l-user').addEventListener('keydown', e => { if(e.key==='Tab') onCredentialInput(); });
 
 document.getElementById('l-channel').addEventListener('change', function() {
   const custom = document.getElementById('l-channel-custom');
